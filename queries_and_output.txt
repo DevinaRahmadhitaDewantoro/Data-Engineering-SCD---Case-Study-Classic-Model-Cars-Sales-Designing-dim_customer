@@ -1,0 +1,230 @@
+MariaDB [(none)]> USE classicmodels;
+Database changed
+MariaDB [classicmodels]> DROP TABLE IF EXISTS dim_customer;
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+MariaDB [classicmodels]> CREATE TABLE dim_customer (
+    ->     customer_key            INT AUTO_INCREMENT PRIMARY KEY,
+    ->     customerNumber          INT NOT NULL,
+    ->     customerName            VARCHAR(50) NOT NULL,
+    ->     contactLastName         VARCHAR(50),
+    ->     contactFirstName        VARCHAR(50),
+    ->     addressLine1            VARCHAR(50),
+    ->     addressLine2            VARCHAR(50),
+    ->     city                    VARCHAR(50),
+    ->     state                   VARCHAR(50),
+    ->     postalCode              VARCHAR(15),
+    ->     country                 VARCHAR(50),
+    ->     salesRepEmployeeNumber  INT,
+    ->     creditLimit             DECIMAL(10,2),
+    ->     effective_date          DATE NOT NULL,
+    ->     expiry_date             DATE NOT NULL DEFAULT '9999-12-31',
+    ->     is_current              BOOLEAN NOT NULL DEFAULT TRUE,
+    ->     INDEX idx_customerNumber (customerNumber),
+    ->     INDEX idx_customerNumber_current (customerNumber, is_current)
+    -> );
+Query OK, 0 rows affected (0.006 sec)
+
+MariaDB [classicmodels]> INSERT INTO dim_customer
+    ->     (customerNumber, customerName, contactLastName, contactFirstName,
+    ->      addressLine1, addressLine2, city, state, postalCode, country,
+    ->      salesRepEmployeeNumber, creditLimit,
+    ->      effective_date, expiry_date, is_current)
+    -> SELECT
+    ->     customerNumber, customerName, contactLastName, contactFirstName,
+    ->     addressLine1, addressLine2, city, state, postalCode, country,
+    ->     salesRepEmployeeNumber, creditLimit,
+    ->     '2003-01-01' AS effective_date,   -- earliest orderDate in classicmodels; adjust if needed
+    ->     '9999-12-31' AS expiry_date,
+    ->     TRUE AS is_current
+    -> FROM customers;
+Query OK, 122 rows affected (0.004 sec)
+Records: 122  Duplicates: 0  Warnings: 0
+
+MariaDB [classicmodels]> DROP PROCEDURE IF EXISTS upsert_dim_customer;
+Query OK, 0 rows affected, 1 warning (0.001 sec)
+
+MariaDB [classicmodels]> DELIMITER $$
+MariaDB [classicmodels]>
+MariaDB [classicmodels]> CREATE PROCEDURE upsert_dim_customer(
+    ->     IN p_customerNumber         INT,
+    ->     IN p_customerName           VARCHAR(50),
+    ->     IN p_contactLastName        VARCHAR(50),
+    ->     IN p_contactFirstName       VARCHAR(50),
+    ->     IN p_addressLine1           VARCHAR(50),
+    ->     IN p_addressLine2           VARCHAR(50),
+    ->     IN p_city                   VARCHAR(50),
+    ->     IN p_state                  VARCHAR(50),
+    ->     IN p_postalCode             VARCHAR(15),
+    ->     IN p_country                VARCHAR(50),
+    ->     IN p_salesRepEmployeeNumber INT,
+    ->     IN p_creditLimit            DECIMAL(10,2),
+    ->     IN p_effective_date         DATE
+    -> )
+    -> BEGIN
+    ->     DECLARE v_customer_key           INT;
+    ->     DECLARE v_addressLine1           VARCHAR(50);
+    ->     DECLARE v_addressLine2           VARCHAR(50);
+    ->     DECLARE v_city                   VARCHAR(50);
+    ->     DECLARE v_state                  VARCHAR(50);
+    ->     DECLARE v_postalCode             VARCHAR(15);
+    ->     DECLARE v_country                VARCHAR(50);
+    ->     DECLARE v_salesRepEmployeeNumber INT;
+    ->     DECLARE v_creditLimit            DECIMAL(10,2);
+    ->     DECLARE v_row_count               INT DEFAULT 0;
+    ->
+    ->     SELECT COUNT(*) INTO v_row_count
+    ->     FROM dim_customer
+    ->     WHERE customerNumber = p_customerNumber
+    ->       AND is_current = TRUE;
+    ->
+    ->     IF v_row_count = 0 THEN
+    ->         INSERT INTO dim_customer
+    ->             (customerNumber, customerName, contactLastName, contactFirstName,
+    ->              addressLine1, addressLine2, city, state, postalCode, country,
+    ->              salesRepEmployeeNumber, creditLimit,
+    ->              effective_date, expiry_date, is_current)
+    ->         VALUES
+    ->             (p_customerNumber, p_customerName, p_contactLastName, p_contactFirstName,
+    ->              p_addressLine1, p_addressLine2, p_city, p_state, p_postalCode, p_country,
+    ->              p_salesRepEmployeeNumber, p_creditLimit,
+    ->              p_effective_date, '9999-12-31', TRUE);
+    ->
+    ->     ELSE
+    ->         SELECT customer_key, addressLine1, addressLine2, city, state, postalCode,
+    ->                country, salesRepEmployeeNumber, creditLimit
+    ->         INTO   v_customer_key, v_addressLine1, v_addressLine2, v_city, v_state,
+    ->                v_postalCode, v_country, v_salesRepEmployeeNumber, v_creditLimit
+    ->         FROM dim_customer
+    ->         WHERE customerNumber = p_customerNumber
+    ->           AND is_current = TRUE;
+    ->
+    ->         IF  v_addressLine1           <=> p_addressLine1
+    ->         AND v_addressLine2           <=> p_addressLine2
+    ->         AND v_city                   <=> p_city
+    ->         AND v_state                  <=> p_state
+    ->         AND v_postalCode             <=> p_postalCode
+    ->         AND v_country                <=> p_country
+    ->         AND v_salesRepEmployeeNumber <=> p_salesRepEmployeeNumber
+    ->         AND v_creditLimit            <=> p_creditLimit
+    ->         THEN
+    ->             UPDATE dim_customer
+    ->             SET customerName    = p_customerName,
+    ->                 contactLastName = p_contactLastName,
+    ->                 contactFirstName = p_contactFirstName
+    ->             WHERE customer_key = v_customer_key;
+    ->
+    ->         ELSE
+    ->             UPDATE dim_customer
+    ->             SET expiry_date = DATE_SUB(p_effective_date, INTERVAL 1 DAY),
+    ->                 is_current  = FALSE
+    ->             WHERE customer_key = v_customer_key;
+    ->
+    ->             INSERT INTO dim_customer
+    ->                 (customerNumber, customerName, contactLastName, contactFirstName,
+    ->                  addressLine1, addressLine2, city, state, postalCode, country,
+    ->                  salesRepEmployeeNumber, creditLimit,
+    ->                  effective_date, expiry_date, is_current)
+    ->             VALUES
+    ->                 (p_customerNumber, p_customerName, p_contactLastName, p_contactFirstName,
+    ->                  p_addressLine1, p_addressLine2, p_city, p_state, p_postalCode, p_country,
+    ->                  p_salesRepEmployeeNumber, p_creditLimit,
+    ->                  p_effective_date, '9999-12-31', TRUE);
+    ->         END IF;
+    ->     END IF;
+    -> END$$
+Query OK, 0 rows affected (0.002 sec)
+
+MariaDB [classicmodels]>
+MariaDB [classicmodels]> DELIMITER ;
+MariaDB [classicmodels]> SELECT * FROM dim_customer
+    -> WHERE customerNumber = 103 AND is_current = TRUE;
++--------------+----------------+-------------------+-----------------+------------------+----------------+--------------+--------+-------+------------+---------+------------------------+-------------+----------------+-------------+------------+
+| customer_key | customerNumber | customerName      | contactLastName | contactFirstName | addressLine1   | addressLine2 | city   | state | postalCode | country | salesRepEmployeeNumber | creditLimit | effective_date | expiry_date | is_current |
++--------------+----------------+-------------------+-----------------+------------------+----------------+--------------+--------+-------+------------+---------+------------------------+-------------+----------------+-------------+------------+
+|            1 |            103 | Atelier graphique | Schmitt         | Carine           | 54, rue Royale | NULL         | Nantes | NULL  | 44000      | France  |                   1370 |    21000.00 | 2003-01-01     | 9999-12-31  |          1 |
++--------------+----------------+-------------------+-----------------+------------------+----------------+--------------+--------+-------+------------+---------+------------------------+-------------+----------------+-------------+------------+
+1 row in set (0.000 sec)
+
+MariaDB [classicmodels]> CALL upsert_dim_customer(
+    ->     103,                         -- p_customerNumber
+    ->     'Atelier graphique',         -- p_customerName
+    ->     'Schmitt',                   -- p_contactLastName
+    ->     'Carine',                    -- p_contactFirstName
+    ->     '54, rue Royale',            -- p_addressLine1
+    ->     NULL,                        -- p_addressLine2
+    ->     'Nantes',                    -- p_city
+    ->     NULL,                        -- p_state
+    ->     '44000',                     -- p_postalCode
+    ->     'France',                    -- p_country
+    ->     1501,                        -- p_salesRepEmployeeNumber  (NEW rep)
+    ->     21000.00,                    -- p_creditLimit
+    ->     '2005-06-01'                 -- p_effective_date
+    -> );
+Query OK, 4 rows affected (0.002 sec)
+
+MariaDB [classicmodels]> SELECT customer_key, customerNumber, salesRepEmployeeNumber, creditLimit,
+    ->        effective_date, expiry_date, is_current
+    -> FROM dim_customer
+    -> WHERE customerNumber = 103
+    -> ORDER BY effective_date;
++--------------+----------------+------------------------+-------------+----------------+-------------+------------+
+| customer_key | customerNumber | salesRepEmployeeNumber | creditLimit | effective_date | expiry_date | is_current |
++--------------+----------------+------------------------+-------------+----------------+-------------+------------+
+|            1 |            103 |                   1370 |    21000.00 | 2003-01-01     | 2005-05-31  |          0 |
+|          128 |            103 |                   1501 |    21000.00 | 2005-06-01     | 9999-12-31  |          1 |
++--------------+----------------+------------------------+-------------+----------------+-------------+------------+
+2 rows in set (0.000 sec)
+
+MariaDB [classicmodels]> CALL upsert_dim_customer(
+    ->     103, 'Atelier graphique', 'Schmitt', 'Carine',
+    ->     '54, rue Royale', NULL, 'Nantes', NULL, '44000', 'France',
+    ->     1501, 21000.00, '2005-06-15'
+    -> );
+Query OK, 2 rows affected (0.001 sec)
+
+MariaDB [classicmodels]> SELECT COUNT(*) AS row_count_should_still_be_2
+    -> FROM dim_customer
+    -> WHERE customerNumber = 103;
++-----------------------------+
+| row_count_should_still_be_2 |
++-----------------------------+
+|                           2 |
++-----------------------------+
+1 row in set (0.001 sec)
+
+MariaDB [classicmodels]> SELECT
+    ->     dc.salesRepEmployeeNumber,
+    ->     YEAR(o.orderDate)                              AS order_year,
+    ->     SUM(od.quantityOrdered * od.priceEach)          AS total_order_value
+    -> FROM orders o
+    -> JOIN orderdetails od
+    ->     ON o.orderNumber = od.orderNumber
+    -> JOIN dim_customer dc
+    ->     ON o.customerNumber = dc.customerNumber
+    ->    AND o.orderDate >= dc.effective_date
+    ->    AND o.orderDate <  dc.expiry_date
+    -> WHERE YEAR(o.orderDate) = 2005
+    -> GROUP BY dc.salesRepEmployeeNumber, YEAR(o.orderDate)
+    -> ORDER BY total_order_value DESC;
++------------------------+------------+-------------------+
+| salesRepEmployeeNumber | order_year | total_order_value |
++------------------------+------------+-------------------+
+|                   1370 |       2005 |         428755.70 |
+|                   1165 |       2005 |         335940.47 |
+|                   1612 |       2005 |         167669.84 |
+|                   1501 |       2005 |         153417.70 |
+|                   1401 |       2005 |         141205.70 |
+|                   1611 |       2005 |         131561.38 |
+|                   1216 |       2005 |          86950.06 |
+|                   1337 |       2005 |          78610.44 |
+|                   1323 |       2005 |          72025.82 |
+|                   1166 |       2005 |          43033.35 |
+|                   1621 |       2005 |          38099.22 |
+|                   1188 |       2005 |          36630.11 |
+|                   1286 |       2005 |          29070.38 |
+|                   1504 |       2005 |          27966.54 |
++------------------------+------------+-------------------+
+14 rows in set (0.002 sec)
+
+MariaDB [classicmodels]>
