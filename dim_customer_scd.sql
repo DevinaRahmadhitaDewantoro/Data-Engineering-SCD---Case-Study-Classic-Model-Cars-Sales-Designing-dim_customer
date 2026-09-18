@@ -4,7 +4,6 @@
 
 -- Name        : Devina Rahmadhita Dewantoro
 -- Student ID  : 24/532725/PA/22528
--- =====================================================================
 
 USE classicmodels;
 
